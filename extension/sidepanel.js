@@ -1,3 +1,7 @@
+import { buildFeatures } from "./lib/features.mjs";
+import { SpellingEngine } from "./lib/spelling.mjs";
+import { FilesetResolver, HandLandmarker } from "./assets/mediapipe/vision_bundle.mjs";
+
 const LABELS = [
   "A","B","C","D","E","F","G","I","L","M",
   "N","O","P","Q","R","S","T","U","V","W"
@@ -6,43 +10,31 @@ const LABELS = [
 const state = {
   stream: null,
   running: false,
+  paused: false,
   landmarker: null,
   session: null,
-  prediction: null,
-  busy: false
+  busy: false,
+  typedText: ""
 };
+
+const engine = new SpellingEngine();
 
 const video = document.getElementById("video");
 const start = document.getElementById("startCamera");
 const stop = document.getElementById("stopCamera");
-const send = document.getElementById("sendToPage");
+const togglePause = document.getElementById("togglePause");
+const sendSpace = document.getElementById("sendSpace");
+const sendBackspace = document.getElementById("sendBackspace");
+const clearTyped = document.getElementById("clearTyped");
 const status = document.getElementById("status");
 const text = document.getElementById("recognizedText");
 const confidence = document.getElementById("confidence");
 const diagnostics = document.getElementById("diagnostics");
+const stabilityFill = document.getElementById("stabilityFill");
+const typedPreview = document.getElementById("typedPreview");
 
 function log(message) {
   diagnostics.textContent += message + "\n";
-}
-
-function buildFeatures(hand) {
-  // EXATAMENTE a lógica do projeto Python anterior:
-  // x_i - min(x), y_i - min(y), total = 42 features.
-  if (!hand || hand.length !== 21) return null;
-
-  const xs = hand.map(p => p.x);
-  const ys = hand.map(p => p.y);
-  const minX = Math.min(...xs);
-  const minY = Math.min(...ys);
-
-  const features = [];
-
-  for (const p of hand) {
-    features.push(p.x - minX);
-    features.push(p.y - minY);
-  }
-
-  return features.length === 42 ? features : null;
 }
 
 async function loadModel() {
@@ -50,9 +42,16 @@ async function loadModel() {
     throw new Error("ONNX Runtime Web não encontrado.");
   }
 
+  // Usamos apenas o binário wasm sem SIMD/threads (assets/onnx/ort-wasm.wasm)
+  // para manter um único arquivo vendorizado; suficiente para um modelo
+  // RandomForest pequeno como este.
+  window.ort.env.wasm.numThreads = 1;
+  window.ort.env.wasm.simd = false;
+  window.ort.env.wasm.wasmPaths = chrome.runtime.getURL("assets/onnx/");
+
   const modelUrl = chrome.runtime.getURL("assets/onnx/model.onnx");
 
-  state.session = await ort.InferenceSession.create(modelUrl, {
+  state.session = await window.ort.InferenceSession.create(modelUrl, {
     executionProviders: ["wasm"]
   });
 
@@ -62,14 +61,18 @@ async function loadModel() {
 }
 
 async function loadMediaPipe() {
-  if (!window.SignForestVision) {
-    throw new Error(
-      "MediaPipe local não configurado. Veja assets/mediapipe/README.md."
-    );
-  }
+  const filesetResolver = await FilesetResolver.forVisionTasks(
+    chrome.runtime.getURL("assets/mediapipe/wasm")
+  );
 
-  state.landmarker =
-    await window.SignForestVision.createHandLandmarker();
+  state.landmarker = await HandLandmarker.createFromOptions(filesetResolver, {
+    baseOptions: {
+      modelAssetPath: chrome.runtime.getURL("assets/mediapipe/hand_landmarker.task")
+    },
+    runningMode: "VIDEO",
+    numHands: 1,
+    minHandDetectionConfidence: 0.3
+  });
 
   log("MediaPipe carregado.");
 }
@@ -77,7 +80,7 @@ async function loadMediaPipe() {
 async function predict(features) {
   const inputName = state.session.inputNames[0];
 
-  const tensor = new ort.Tensor(
+  const tensor = new window.ort.Tensor(
     "float32",
     Float32Array.from(features),
     [1, 42]
@@ -121,9 +124,7 @@ async function predict(features) {
     throw new Error("Não foi possível interpretar a saída do ONNX.");
   }
 
-  const score = probabilities
-    ? probabilities[labelIndex]
-    : null;
+  const score = probabilities ? probabilities[labelIndex] : null;
 
   return {
     label: LABELS[labelIndex] ?? String(labelIndex),
@@ -131,34 +132,86 @@ async function predict(features) {
   };
 }
 
+async function sendKey(action, value) {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) return false;
+
+    const response = await chrome.tabs.sendMessage(tab.id, {
+      type: "SIGNFOREST_KEY",
+      action,
+      value
+    });
+
+    return Boolean(response?.ok);
+  } catch (error) {
+    log("Content Script: " + error.message);
+    return false;
+  }
+}
+
+function updateTypedPreview() {
+  typedPreview.textContent = state.typedText.length ? state.typedText : "—";
+}
+
+async function typeChar(char) {
+  const ok = await sendKey("char", char);
+  if (ok) {
+    state.typedText += char;
+    updateTypedPreview();
+  }
+}
+
+async function typeBackspace() {
+  const ok = await sendKey("backspace");
+  if (ok && state.typedText.length) {
+    state.typedText = state.typedText.slice(0, -1);
+    updateTypedPreview();
+  }
+}
+
+async function clearAllTyped() {
+  const count = state.typedText.length;
+  for (let i = 0; i < count; i++) {
+    await sendKey("backspace");
+  }
+  state.typedText = "";
+  updateTypedPreview();
+}
+
 async function processFrame() {
   if (!state.running) return;
 
-  // Evita acumular inferências assíncronas.
   if (!state.busy) {
     state.busy = true;
 
     try {
-      const result = await state.landmarker.detectForVideo(
-        video,
-        performance.now()
-      );
-
+      const result = await state.landmarker.detectForVideo(video, performance.now());
       const hand = result?.landmarks?.[0];
       const features = buildFeatures(hand);
 
-      if (features) {
+      let confirmedLabel = null;
+
+      if (!features) {
+        confirmedLabel = engine.processNoHand();
+        text.textContent = "—";
+        confidence.textContent = "Confiança: —";
+      } else {
         const prediction = await predict(features);
 
-        state.prediction = prediction;
         text.textContent = prediction.label;
-
         confidence.textContent =
           prediction.confidence == null
-            ? "Confiança: disponível somente após ajuste da saída"
+            ? "Confiança: indisponível"
             : `Confiança: ${(prediction.confidence * 100).toFixed(1)}%`;
 
-        send.disabled = false;
+        confirmedLabel = engine.processDetection(prediction);
+      }
+
+      stabilityFill.style.width = `${(engine.progress * 100).toFixed(0)}%`;
+
+      if (confirmedLabel && !state.paused) {
+        await typeChar(confirmedLabel);
       }
     } catch (error) {
       log("Frame: " + error.message);
@@ -189,10 +242,20 @@ async function startCamera() {
     await loadModel();
     await loadMediaPipe();
 
+    engine.reset();
+    state.typedText = "";
+    state.paused = false;
+    updateTypedPreview();
+    togglePause.textContent = "Pausar soletração";
+
     state.running = true;
     start.disabled = true;
     stop.disabled = false;
-    status.textContent = "Reconhecimento ativo";
+    togglePause.disabled = false;
+    sendSpace.disabled = false;
+    sendBackspace.disabled = false;
+    clearTyped.disabled = false;
+    status.textContent = "Soletração automática ativa";
 
     requestAnimationFrame(processFrame);
   } catch (error) {
@@ -212,27 +275,25 @@ function stopCamera() {
   video.srcObject = null;
   start.disabled = false;
   stop.disabled = true;
+  togglePause.disabled = true;
+  sendSpace.disabled = true;
+  sendBackspace.disabled = true;
+  clearTyped.disabled = true;
+  stabilityFill.style.width = "0%";
   status.textContent = "Câmera parada";
 }
 
-async function sendToPage() {
-  if (!state.prediction) return;
-
-  const [tab] = await chrome.tabs.query({
-    active: true,
-    currentWindow: true
-  });
-
-  if (!tab?.id) return;
-
-  chrome.tabs.sendMessage(tab.id, {
-    type: "SIGNFOREST_INSERT_TEXT",
-    text: state.prediction.label
-  }).catch(error => log("Content Script: " + error.message));
+function onTogglePause() {
+  state.paused = !state.paused;
+  togglePause.textContent = state.paused ? "Retomar soletração" : "Pausar soletração";
+  status.textContent = state.paused ? "Soletração pausada" : "Soletração automática ativa";
 }
 
 start.addEventListener("click", startCamera);
 stop.addEventListener("click", stopCamera);
-send.addEventListener("click", sendToPage);
+togglePause.addEventListener("click", onTogglePause);
+sendSpace.addEventListener("click", () => typeChar(" "));
+sendBackspace.addEventListener("click", () => typeBackspace());
+clearTyped.addEventListener("click", () => clearAllTyped());
 
 log("SignForest carregado.");

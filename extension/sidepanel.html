@@ -25,12 +25,30 @@
     <div id="status">Câmera parada</div>
 
     <section class="result">
-      <small>Sinal reconhecido</small>
+      <small>Sinal detectado</small>
       <strong id="recognizedText">—</strong>
       <span id="confidence">Confiança: —</span>
+      <div class="stability-track">
+        <div id="stabilityFill" class="stability-fill"></div>
+      </div>
     </section>
 
-    <button id="sendToPage" disabled>Inserir na página</button>
+    <section class="typed">
+      <small>Texto digitado nesta sessão</small>
+      <strong id="typedPreview">—</strong>
+    </section>
+
+    <section class="single-button">
+      <button id="togglePause" disabled>Pausar soletração</button>
+    </section>
+
+    <section class="buttons">
+      <button id="sendSpace" disabled>Espaço</button>
+      <button id="sendBackspace" disabled>Apagar</button>
+    </section>
+    <section class="single-button">
+      <button id="clearTyped" disabled>Limpar texto digitado</button>
+    </section>
 
     <details>
       <summary>Diagnóstico</summary>
@@ -38,9 +56,10 @@
     </details>
   </main>
 
-  <!-- Os arquivos abaixo precisam ser locais no build final. -->
-  <script src="assets/mediapipe/vision_bundle.js"></script>
+  <!-- ort.min.js expõe window.ort (script clássico); os assets do MediaPipe são
+       carregados como módulo ES diretamente por sidepanel.js. Nenhum dos dois
+       depende de CDN — todos os arquivos ficam em assets/. -->
   <script src="assets/onnx/ort.min.js"></script>
-  <script src="sidepanel.js"></script>
+  <script type="module" src="sidepanel.js"></script>
 </body>
 </html>

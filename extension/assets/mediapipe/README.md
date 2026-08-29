@@ -1,12 +1,14 @@
-Coloque aqui os arquivos locais do MediaPipe Tasks Vision.
+Arquivos vendorizados nesta pasta (sem CDN, tudo local):
 
-A extensão espera um `vision_bundle.js` que exponha:
+- `vision_bundle.mjs` — `@mediapipe/tasks-vision@1.0.1` (build ESM), importado
+  diretamente por `sidepanel.js` (`type="module"`):
+  `import { FilesetResolver, HandLandmarker } from "./assets/mediapipe/vision_bundle.mjs"`.
+- `wasm/vision_wasm_internal.js` + `wasm/vision_wasm_internal.wasm` — runtime
+  wasm com SIMD (variante padrão do pacote; Chrome e Edge alvo já suportam
+  SIMD). Carregado via `FilesetResolver.forVisionTasks(...)`.
+- `hand_landmarker.task` — cópia do modelo em `training/hand_landmarker.task`
+  (mesmo formato MediaPipe Tasks usado no pipeline Python).
 
-```javascript
-window.SignForestVision.createHandLandmarker()
-```
-
-A função deve retornar um Hand Landmarker configurado para detectar uma única mão.
-
-No build final do TCC, mantenha os arquivos localmente dentro da extensão,
-sem depender de CDN/código remoto.
+Se quiser atualizar a versão do `@mediapipe/tasks-vision`, baixe os mesmos
+arquivos (`vision_bundle.mjs` e a pasta `wasm/`) do pacote npm na versão
+desejada.

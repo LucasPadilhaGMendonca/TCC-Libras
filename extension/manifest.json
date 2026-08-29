@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
   "name": "SignForest - LIBRAS para Busca",
-  "version": "0.2.0",
-  "description": "Reconhecimento local de sinais em LIBRAS por webcam.",
+  "version": "0.3.0",
+  "description": "Reconhecimento local de sinais em LIBRAS por webcam, com soletração automática.",
+  "minimum_chrome_version": "114",
   "permissions": ["sidePanel", "activeTab"],
   "host_permissions": ["<all_urls>"],
   "action": {
