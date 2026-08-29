@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SignForest</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <main class="app">
+    <header>
+      <h1>SignForest</h1>
+      <p>LIBRAS → texto</p>
+    </header>
+
+    <section class="camera">
+      <video id="video" autoplay playsinline muted></video>
+    </section>
+
+    <section class="buttons">
+      <button id="startCamera">Iniciar câmera</button>
+      <button id="stopCamera" disabled>Parar</button>
+    </section>
+
+    <div id="status">Câmera parada</div>
+
+    <section class="result">
+      <small>Sinal reconhecido</small>
+      <strong id="recognizedText">—</strong>
+      <span id="confidence">Confiança: —</span>
+    </section>
+
+    <button id="sendToPage" disabled>Inserir na página</button>
+
+    <details>
+      <summary>Diagnóstico</summary>
+      <pre id="diagnostics"></pre>
+    </details>
+  </main>
+
+  <!-- Os arquivos abaixo precisam ser locais no build final. -->
+  <script src="assets/mediapipe/vision_bundle.js"></script>
+  <script src="assets/onnx/ort.min.js"></script>
+  <script src="sidepanel.js"></script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+dataset/data.pickle
+training/model.p
+training/hyperparameter_results.csv
+extension/assets/onnx/model.onnx

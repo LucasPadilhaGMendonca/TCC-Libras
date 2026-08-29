@@ -1,0 +1,16 @@
+*{box-sizing:border-box}
+body{margin:0;background:#f5f7fa;color:#172033;font-family:Arial,sans-serif}
+.app{padding:16px}
+h1{margin:0}
+p{margin:4px 0 14px;color:#667085}
+.camera{width:100%;aspect-ratio:4/3;background:#101828;border-radius:12px;overflow:hidden}
+video{width:100%;height:100%;object-fit:cover}
+.buttons{display:flex;gap:8px;margin-top:12px}
+button{width:100%;border:0;border-radius:8px;padding:10px;font-weight:700;cursor:pointer}
+.buttons button{width:50%}
+button:disabled{opacity:.45}
+#status{margin:12px 0;font-size:13px}
+.result{background:white;border-radius:12px;padding:14px;margin:12px 0}
+.result small,.result span{display:block;color:#667085}
+.result strong{display:block;font-size:32px;margin:8px 0}
+pre{white-space:pre-wrap;font-size:11px}
