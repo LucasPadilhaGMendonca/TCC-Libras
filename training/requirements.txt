@@ -4,7 +4,7 @@ scipy==1.14.1
 joblib==1.4.2
 pillow==11.0.0
 opencv-contrib-python==4.10.0.84
-opencv-python==4.10.0.84
 mediapipe==0.10.18
 onnx==1.17.0
 skl2onnx==1.17.0
+pytest==8.3.3
