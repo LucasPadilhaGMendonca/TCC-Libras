@@ -2,8 +2,10 @@ import os
 import pickle
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, StratifiedGroupKFold
 from sklearn.metrics import accuracy_score, classification_report
+
+from grouping import min_groups_per_class
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_FILE = os.path.join(ROOT, "dataset", "data.pickle")
@@ -19,15 +21,35 @@ with open(DATA_FILE, "rb") as f:
 
 data = np.asarray(data_dict["data"], dtype=np.float32)
 labels = np.asarray(data_dict["labels"])
+# "groups" identifica o vídeo/intérprete de origem de cada frame (ver
+# create_dataset.py). Pickles antigos sem essa chave caem no fallback abaixo.
+groups = np.asarray(data_dict.get("groups", labels))
 
-x_train, x_test, y_train, y_test = train_test_split(
-    data,
-    labels,
-    test_size=0.2,
-    shuffle=True,
-    stratify=labels,
-    random_state=42
-)
+if min_groups_per_class(labels, groups) < 2:
+    print(
+        "[AVISO] Pelo menos uma classe tem frames de um único vídeo/intérprete. "
+        "Não é possível fazer um split por grupo que deixe cada classe "
+        "representada em treino e teste sem vazamento. Usando split aleatório "
+        "por frame (ver README, seção de dataset: mais vídeos por classe "
+        "deixam essa métrica confiável)."
+    )
+    x_train, x_test, y_train, y_test = train_test_split(
+        data,
+        labels,
+        test_size=0.2,
+        shuffle=True,
+        stratify=labels,
+        random_state=42
+    )
+else:
+    splitter = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=42)
+    train_idx, test_idx = next(splitter.split(data, labels, groups))
+    x_train, x_test = data[train_idx], data[test_idx]
+    y_train, y_test = labels[train_idx], labels[test_idx]
+    print(
+        "Split por grupo (StratifiedGroupKFold): nenhum vídeo/intérprete "
+        "aparece simultaneamente em treino e teste."
+    )
 
 model = RandomForestClassifier(
     n_estimators=100,

@@ -3,8 +3,10 @@ import pickle
 import csv
 from itertools import product
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.model_selection import train_test_split, StratifiedGroupKFold, cross_val_score
 import numpy as np
+
+from grouping import min_groups_per_class
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_FILE = os.path.join(ROOT, "dataset", "data.pickle")
@@ -14,10 +16,28 @@ with open(DATA_FILE, "rb") as f:
 
 data = np.asarray(data_dict["data"])
 labels = np.asarray(data_dict["labels"])
+groups = np.asarray(data_dict.get("groups", labels))
 
-x_train, x_test, y_train, y_test = train_test_split(
-    data, labels, test_size=0.2, shuffle=True, stratify=labels, random_state=42
-)
+has_groups = min_groups_per_class(labels, groups) >= 2
+
+if has_groups:
+    splitter = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=42)
+    train_idx, test_idx = next(splitter.split(data, labels, groups))
+    x_train, x_test = data[train_idx], data[test_idx]
+    y_train, y_test = labels[train_idx], labels[test_idx]
+    groups_train = groups[train_idx]
+    cv = StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=42)
+    cv_args = {"groups": groups_train}
+else:
+    print(
+        "[AVISO] Pelo menos uma classe tem frames de um único vídeo/intérprete; "
+        "usando split/cv aleatório por frame (ver README, seção de dataset)."
+    )
+    x_train, x_test, y_train, y_test = train_test_split(
+        data, labels, test_size=0.2, shuffle=True, stratify=labels, random_state=42
+    )
+    cv = 5
+    cv_args = {}
 
 # IMPORTANTE:
 # A grade original possui 995.328 combinações.
@@ -66,7 +86,7 @@ for i, params in enumerate(param_combinations, start=1):
     )
 
     scores = cross_val_score(
-        model, x_train, y_train, cv=5, scoring="accuracy", n_jobs=-1
+        model, x_train, y_train, cv=cv, scoring="accuracy", n_jobs=-1, **cv_args
     )
 
     mean_score = scores.mean()

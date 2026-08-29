@@ -47,6 +47,7 @@ def main():
 
     data = []
     labels = []
+    groups = []
     total_frames = 0
     valid_frames = 0
     no_hand = 0
@@ -83,13 +84,19 @@ def main():
 
                 features = build_features(detection_result.hand_landmarks[0])
                 if features is not None:
+                    # Nome do vídeo de origem (extract_frames.py salva frames como
+                    # "<video>_frame_0000123.jpg"), usado para não vazar o mesmo
+                    # vídeo entre treino e teste em train_classifier.py.
+                    video_name = image_path.stem.rsplit("_frame_", 1)[0]
+
                     data.append(features)
                     labels.append(class_label)
+                    groups.append(video_name)
                     valid_frames += 1
 
     OUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(OUT_FILE, "wb") as f:
-        pickle.dump({"data": data, "labels": labels}, f)
+        pickle.dump({"data": data, "labels": labels, "groups": groups}, f)
 
     print("\n==============================")
     print(f"Frames analisados:    {total_frames}")
