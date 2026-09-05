@@ -22,7 +22,7 @@ const state = {
 
 const engine = new SpellingEngine();
 
-// Elementos da interface (compatíveis com o sidepanel.html atualizado)
+// Elementos da interface
 const video = document.getElementById("webcam");
 const btnStart = document.getElementById("btnStart");
 const btnStop = document.getElementById("btnStop");
@@ -36,7 +36,7 @@ const confidenceValue = document.getElementById("confidenceValue");
 const confidenceBar = document.getElementById("confidenceBar");
 const fpsCounter = document.getElementById("fpsCounter");
 
-// Elementos opcionais de soletração (caso adicionados ao HTML)
+// Elementos opcionais de soletração / diagnóstico
 const togglePause = document.getElementById("togglePause");
 const sendSpace = document.getElementById("sendSpace");
 const sendBackspace = document.getElementById("sendBackspace");
@@ -67,7 +67,7 @@ function updateFPS() {
 
 async function loadModel() {
   if (!window.ort) {
-    throw new Error("ONNX Runtime Web não encontrado.");
+    throw new Error("ONNX Runtime Web (ort.min.js) não foi encontrado no escopo global.");
   }
 
   window.ort.env.wasm.numThreads = 1;
@@ -141,7 +141,7 @@ async function predict(features) {
   }
 
   if (labelIndex === null) {
-    throw new Error("Não foi possível decodificar saída ONNX.");
+    throw new Error("Não foi possível decodificar a predição da saída ONNX.");
   }
 
   const score = probabilities ? probabilities[labelIndex] : null;
@@ -217,21 +217,21 @@ async function processFrame() {
 
       if (!features) {
         confirmedLabel = engine.processNoHand();
-        predictedLetter.textContent = "—";
-        confidenceValue.textContent = "0%";
-        confidenceBar.style.width = "0%";
+        if (predictedLetter) predictedLetter.textContent = "—";
+        if (confidenceValue) confidenceValue.textContent = "0%";
+        if (confidenceBar) confidenceBar.style.width = "0%";
       } else {
         const prediction = await predict(features);
 
-        predictedLetter.textContent = prediction.label;
+        if (predictedLetter) predictedLetter.textContent = prediction.label;
 
         if (prediction.confidence != null) {
           const pct = Math.min(100, Math.max(0, prediction.confidence * 100));
-          confidenceValue.textContent = `${pct.toFixed(0)}%`;
-          confidenceBar.style.width = `${pct.toFixed(0)}%`;
+          if (confidenceValue) confidenceValue.textContent = `${pct.toFixed(0)}%`;
+          if (confidenceBar) confidenceBar.style.width = `${pct.toFixed(0)}%`;
         } else {
-          confidenceValue.textContent = "—";
-          confidenceBar.style.width = "100%";
+          if (confidenceValue) confidenceValue.textContent = "—";
+          if (confidenceBar) confidenceBar.style.width = "100%";
         }
 
         confirmedLabel = engine.processDetection(prediction);
@@ -241,7 +241,7 @@ async function processFrame() {
         await typeChar(confirmedLabel);
       }
     } catch (error) {
-      log("Erro no frame: " + error.message);
+      log("Erro no processamento do frame: " + error.message);
     } finally {
       state.busy = false;
     }
@@ -255,10 +255,13 @@ async function startCamera() {
     permissionNotice.classList.add("hidden");
   }
 
-  statusBadge.textContent = "Iniciando...";
-  statusBadge.className = "badge status-standby";
+  if (statusBadge) {
+    statusBadge.textContent = "Iniciando...";
+    statusBadge.className = "badge status-standby";
+  }
 
   try {
+    // Solicita o stream de vídeo da câmera
     state.stream = await navigator.mediaDevices.getUserMedia({
       video: {
         width: 640,
@@ -271,18 +274,22 @@ async function startCamera() {
     video.srcObject = state.stream;
     await video.play();
 
+    if (cameraPlaceholder) {
+      cameraPlaceholder.classList.add("hidden");
+    }
+
+    if (btnStart) btnStart.disabled = true;
+    if (btnStop) btnStop.disabled = false;
+
+    // Carrega modelos se ainda não estiverem na memória
     if (!state.session) {
-      statusBadge.textContent = "Carregando IA...";
+      if (statusBadge) statusBadge.textContent = "Carregando IA...";
       await loadModel();
     }
 
     if (!state.landmarker) {
-      statusBadge.textContent = "Carregando Mãos...";
+      if (statusBadge) statusBadge.textContent = "Carregando Mãos...";
       await loadMediaPipe();
-    }
-
-    if (cameraPlaceholder) {
-      cameraPlaceholder.classList.add("hidden");
     }
 
     engine.reset();
@@ -291,24 +298,26 @@ async function startCamera() {
     updateTypedPreview();
 
     state.running = true;
-    btnStart.disabled = true;
-    btnStop.disabled = false;
 
     if (togglePause) togglePause.disabled = false;
     if (sendSpace) sendSpace.disabled = false;
     if (sendBackspace) sendBackspace.disabled = false;
     if (clearTyped) clearTyped.disabled = false;
 
-    statusBadge.textContent = "Ao vivo";
-    statusBadge.className = "badge status-active";
+    if (statusBadge) {
+      statusBadge.textContent = "Ao vivo";
+      statusBadge.className = "badge status-active";
+    }
 
     requestAnimationFrame(processFrame);
   } catch (error) {
     log("Erro na câmera: " + error.message);
-    statusBadge.textContent = "Inativo";
-    statusBadge.className = "badge status-standby";
+    
+    if (statusBadge) {
+      statusBadge.textContent = "Inativo";
+      statusBadge.className = "badge status-standby";
+    }
 
-    // Trata bloqueio de permissão no Sidepanel abrindo uma aba do Chrome para conceder
     if (
       error.name === "NotAllowedError" ||
       error.name === "SecurityError" ||
@@ -317,7 +326,6 @@ async function startCamera() {
       if (permissionNotice) {
         permissionNotice.classList.remove("hidden");
       }
-      chrome.tabs.create({ url: chrome.runtime.getURL("sidepanel.html") });
     }
   }
 }
@@ -335,21 +343,23 @@ function stopCamera() {
     cameraPlaceholder.classList.remove("hidden");
   }
 
-  btnStart.disabled = false;
-  btnStop.disabled = true;
+  if (btnStart) btnStart.disabled = false;
+  if (btnStop) btnStop.disabled = true;
 
   if (togglePause) togglePause.disabled = true;
   if (sendSpace) sendSpace.disabled = true;
   if (sendBackspace) sendBackspace.disabled = true;
   if (clearTyped) clearTyped.disabled = true;
 
-  predictedLetter.textContent = "—";
-  confidenceValue.textContent = "0%";
-  confidenceBar.style.width = "0%";
+  if (predictedLetter) predictedLetter.textContent = "—";
+  if (confidenceValue) confidenceValue.textContent = "0%";
+  if (confidenceBar) confidenceBar.style.width = "0%";
   if (fpsCounter) fpsCounter.textContent = "0 FPS";
 
-  statusBadge.textContent = "Inativo";
-  statusBadge.className = "badge status-standby";
+  if (statusBadge) {
+    statusBadge.textContent = "Inativo";
+    statusBadge.className = "badge status-standby";
+  }
 }
 
 function onTogglePause() {
@@ -359,9 +369,9 @@ function onTogglePause() {
   }
 }
 
-// Event Listeners
-btnStart.addEventListener("click", startCamera);
-btnStop.addEventListener("click", stopCamera);
+// Registro de eventos
+if (btnStart) btnStart.addEventListener("click", startCamera);
+if (btnStop) btnStop.addEventListener("click", stopCamera);
 
 if (btnOpenPermission) {
   btnOpenPermission.addEventListener("click", () => {
