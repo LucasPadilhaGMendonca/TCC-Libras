@@ -1,80 +1,70 @@
-export class SpellingEngine {
-  constructor(options = {}) {
-    this.stableFramesRequired = options.stableFramesRequired ?? 8;
-    this.confidenceThreshold = options.confidenceThreshold ?? 0.6;
-    this.releaseFramesRequired = options.releaseFramesRequired ?? 2;
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { SpellingEngine } from "./spelling.mjs";
 
-    this.streak = 0;
-    this.pendingLabel = null;
-    this.lastConfirmed = null;
-    this.releaseStreak = 0;
-    this.progress = 0;
+function feed(engine, label, confidence, times) {
+  let last = null;
+  for (let i = 0; i < times; i++) {
+    last = engine.processDetection({ label, confidence });
   }
-
-  processDetection(prediction) {
-    if (!prediction || !prediction.label) {
-      return this.processNoHand();
-    }
-
-    // 1. Rejeita predição abaixo da confiança mínima configurada
-    if (prediction.confidence !== null && prediction.confidence !== undefined) {
-      if (prediction.confidence < this.confidenceThreshold) {
-        return null;
-      }
-    }
-
-    const current = prediction.label;
-
-    // 2. Bloqueia repetição contínua do mesmo sinal enquanto não houver soltura da mão
-    if (current === this.lastConfirmed) {
-      this.progress = 0;
-      return null;
-    }
-
-    // Ao detectar mão válida, zera a contagem de soltura
-    this.releaseStreak = 0;
-
-    // 3. Atualiza ou reinicia streak
-    if (this.pendingLabel === current) {
-      this.streak++;
-    } else {
-      this.pendingLabel = current;
-      this.streak = 1;
-    }
-
-    this.progress = Math.min(1, this.streak / this.stableFramesRequired);
-
-    // 4. Confirmação do sinal
-    if (this.streak >= this.stableFramesRequired) {
-      const confirmed = this.pendingLabel;
-      this.lastConfirmed = confirmed;
-      this.pendingLabel = null;
-      this.streak = 0;
-      this.progress = 0;
-      return confirmed;
-    }
-
-    return null;
-  }
-
-  processNoHand() {
-    this.streak = 0;
-    this.pendingLabel = null;
-    this.progress = 0;
-
-    this.releaseStreak++;
-    if (this.releaseStreak >= this.releaseFramesRequired) {
-      this.lastConfirmed = null; // Libera para confirmar a mesma palavra novamente
-    }
-
-    return null;
-  }
-
-  reset() {
-    this.streak = 0;
-    this.pendingLabel = null;
-    this.lastConfirmed = null;
-    this.releaseStreak = 0;
-    this.progress = 0;
-  }
+  return last;
 }
+
+test("confirma a letra após atingir o número de frames estáveis", () => {
+  const engine = new SpellingEngine({ stableFramesRequired: 5, confidenceThreshold: 0.6 });
+
+  const results = [];
+  for (let i = 0; i < 5; i++) {
+    results.push(engine.processDetection({ label: "A", confidence: 0.9 }));
+  }
+
+  assert.deepEqual(results, [null, null, null, null, "A"]);
+});
+
+test("não confirma quando a confiança está abaixo do limiar", () => {
+  const engine = new SpellingEngine({ stableFramesRequired: 3, confidenceThreshold: 0.6 });
+
+  const confirmed = feed(engine, "B", 0.3, 10);
+
+  assert.equal(confirmed, null);
+});
+
+test("não repete a mesma letra sem um 'release' (sem mão) entre confirmações", () => {
+  const engine = new SpellingEngine({
+    stableFramesRequired: 3,
+    confidenceThreshold: 0.6,
+    releaseFramesRequired: 2
+  });
+
+  const first = feed(engine, "C", 0.9, 3);
+  assert.equal(first, "C");
+
+  const stillHolding = feed(engine, "C", 0.9, 10);
+  assert.equal(stillHolding, null);
+
+  engine.processNoHand();
+  engine.processNoHand();
+
+  const second = feed(engine, "C", 0.9, 3);
+  assert.equal(second, "C");
+});
+
+test("trocar de sinal antes de estabilizar reinicia a contagem", () => {
+  const engine = new SpellingEngine({ stableFramesRequired: 4, confidenceThreshold: 0.6 });
+
+  engine.processDetection({ label: "D", confidence: 0.9 });
+  engine.processDetection({ label: "D", confidence: 0.9 });
+  engine.processDetection({ label: "E", confidence: 0.9 });
+
+  assert.equal(engine.pendingLabel, "E");
+  assert.ok(engine.progress < 1);
+});
+
+test("progress reflete a fração do streak atual", () => {
+  const engine = new SpellingEngine({ stableFramesRequired: 4, confidenceThreshold: 0.6 });
+
+  engine.processDetection({ label: "F", confidence: 0.9 });
+  engine.processDetection({ label: "F", confidence: 0.9 });
+
+  assert.equal(engine.progress, 0.5);
+});

@@ -1,8 +1,13 @@
 export class SpellingEngine {
   constructor(options = {}) {
-    this.stabilityThreshold = options.stabilityThreshold ?? 8; // Quadros consecutivos para confirmar
-    this.history = [];
+    this.stableFramesRequired = options.stableFramesRequired ?? options.stabilityThreshold ?? 8;
+    this.confidenceThreshold = options.confidenceThreshold ?? 0.6;
+    this.releaseFramesRequired = options.releaseFramesRequired ?? 2;
+
+    this.streak = 0;
+    this.pendingLabel = null;
     this.lastConfirmed = null;
+    this.releaseStreak = 0;
     this.progress = 0;
   }
 
@@ -11,42 +16,63 @@ export class SpellingEngine {
       return this.processNoHand();
     }
 
+    // Descarta detecções abaixo do limiar de confiança
+    if (prediction.confidence !== null && prediction.confidence !== undefined) {
+      if (prediction.confidence < this.confidenceThreshold) {
+        return null;
+      }
+    }
+
     const current = prediction.label;
 
-    // Se acabou de confirmar esse sinal e ainda está segurando a mão na mesma posição, não digita de novo
+    // Impede repetição enquanto a mesma pose estiver sendo sustentada
     if (current === this.lastConfirmed) {
       this.progress = 0;
       return null;
     }
 
-    if (this.history.length > 0 && this.history[this.history.length - 1] === current) {
-      this.history.push(current);
+    // Detecção ativa reinicia a contagem de soltura
+    this.releaseStreak = 0;
+
+    if (this.pendingLabel === current) {
+      this.streak++;
     } else {
-      this.history = [current];
+      this.pendingLabel = current;
+      this.streak = 1;
     }
 
-    this.progress = Math.min(1, this.history.length / this.stabilityThreshold);
+    this.progress = Math.min(1, this.streak / this.stableFramesRequired);
 
-    if (this.history.length >= this.stabilityThreshold) {
-      this.lastConfirmed = current;
-      this.history = [];
+    if (this.streak >= this.stableFramesRequired) {
+      const confirmed = this.pendingLabel;
+      this.lastConfirmed = confirmed;
+      this.pendingLabel = null;
+      this.streak = 0;
       this.progress = 0;
-      return current;
+      return confirmed;
     }
 
     return null;
   }
 
   processNoHand() {
-    this.history = [];
+    this.streak = 0;
+    this.pendingLabel = null;
     this.progress = 0;
-    this.lastConfirmed = null; // Libera para fazer o mesmo sinal novamente após abaixar as mãos
+
+    this.releaseStreak++;
+    if (this.releaseStreak >= this.releaseFramesRequired) {
+      this.lastConfirmed = null; // Libera confirmação do mesmo caractere
+    }
+
     return null;
   }
 
   reset() {
-    this.history = [];
-    this.progress = 0;
+    this.streak = 0;
+    this.pendingLabel = null;
     this.lastConfirmed = null;
+    this.releaseStreak = 0;
+    this.progress = 0;
   }
 }
