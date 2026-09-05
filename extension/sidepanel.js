@@ -3,8 +3,8 @@ import { SpellingEngine } from "./lib/spelling.mjs";
 import { FilesetResolver, HandLandmarker } from "./assets/mediapipe/vision_bundle.mjs";
 
 const LABELS = [
-  "A","B","C","D","E","F","G","I","L","M",
-  "N","O","P","Q","R","S","T","U","V","W"
+  "A", "B", "C", "D", "E", "F", "G", "I", "L", "M",
+  "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W"
 ];
 
 const state = {
@@ -14,27 +14,55 @@ const state = {
   landmarker: null,
   session: null,
   busy: false,
-  typedText: ""
+  typedText: "",
+  lastFrameTime: performance.now(),
+  frameCount: 0,
+  fps: 0
 };
 
 const engine = new SpellingEngine();
 
-const video = document.getElementById("video");
-const start = document.getElementById("startCamera");
-const stop = document.getElementById("stopCamera");
+// Elementos da interface (compatíveis com o sidepanel.html atualizado)
+const video = document.getElementById("webcam");
+const btnStart = document.getElementById("btnStart");
+const btnStop = document.getElementById("btnStop");
+const statusBadge = document.getElementById("statusBadge");
+const cameraPlaceholder = document.getElementById("cameraPlaceholder");
+const permissionNotice = document.getElementById("permissionNotice");
+const btnOpenPermission = document.getElementById("btnOpenPermission");
+
+const predictedLetter = document.getElementById("predictedLetter");
+const confidenceValue = document.getElementById("confidenceValue");
+const confidenceBar = document.getElementById("confidenceBar");
+const fpsCounter = document.getElementById("fpsCounter");
+
+// Elementos opcionais de soletração (caso adicionados ao HTML)
 const togglePause = document.getElementById("togglePause");
 const sendSpace = document.getElementById("sendSpace");
 const sendBackspace = document.getElementById("sendBackspace");
 const clearTyped = document.getElementById("clearTyped");
-const status = document.getElementById("status");
-const text = document.getElementById("recognizedText");
-const confidence = document.getElementById("confidence");
-const diagnostics = document.getElementById("diagnostics");
-const stabilityFill = document.getElementById("stabilityFill");
 const typedPreview = document.getElementById("typedPreview");
+const diagnostics = document.getElementById("diagnostics");
 
 function log(message) {
-  diagnostics.textContent += message + "\n";
+  if (diagnostics) {
+    diagnostics.textContent += message + "\n";
+  }
+  console.log("[RVL Libras]", message);
+}
+
+function updateFPS() {
+  const now = performance.now();
+  state.frameCount++;
+
+  if (now - state.lastFrameTime >= 1000) {
+    state.fps = Math.round((state.frameCount * 1000) / (now - state.lastFrameTime));
+    state.frameCount = 0;
+    state.lastFrameTime = now;
+    if (fpsCounter) {
+      fpsCounter.textContent = `${state.fps} FPS`;
+    }
+  }
 }
 
 async function loadModel() {
@@ -42,9 +70,6 @@ async function loadModel() {
     throw new Error("ONNX Runtime Web não encontrado.");
   }
 
-  // Usamos apenas o binário wasm sem SIMD/threads (assets/onnx/ort-wasm.wasm)
-  // para manter um único arquivo vendorizado; suficiente para um modelo
-  // RandomForest pequeno como este.
   window.ort.env.wasm.numThreads = 1;
   window.ort.env.wasm.simd = false;
   window.ort.env.wasm.wasmPaths = chrome.runtime.getURL("assets/onnx/");
@@ -55,9 +80,7 @@ async function loadModel() {
     executionProviders: ["wasm"]
   });
 
-  log("Modelo ONNX carregado.");
-  log("Entrada: " + state.session.inputNames.join(", "));
-  log("Saída: " + state.session.outputNames.join(", "));
+  log("Modelo ONNX carregado com sucesso.");
 }
 
 async function loadMediaPipe() {
@@ -74,7 +97,7 @@ async function loadMediaPipe() {
     minHandDetectionConfidence: 0.3
   });
 
-  log("MediaPipe carregado.");
+  log("MediaPipe HandLandmarker carregado.");
 }
 
 async function predict(features) {
@@ -90,9 +113,6 @@ async function predict(features) {
     [inputName]: tensor
   });
 
-  // sklearn/RandomForest exportado pelo skl2onnx normalmente fornece:
-  // - output de label
-  // - output de probabilidades quando zipmap=False.
   const outputs = state.session.outputNames.map(name => ({
     name,
     value: result[name]
@@ -102,17 +122,17 @@ async function predict(features) {
   let probabilities = null;
 
   for (const item of outputs) {
-    const value = item.value;
+    const val = item.value;
 
-    if (value?.data?.length === 1) {
-      const candidate = Number(value.data[0]);
+    if (val?.data?.length === 1) {
+      const candidate = Number(val.data[0]);
       if (Number.isInteger(candidate)) {
         labelIndex = candidate;
       }
     }
 
-    if (value?.data?.length === LABELS.length) {
-      probabilities = Array.from(value.data, Number);
+    if (val?.data?.length === LABELS.length) {
+      probabilities = Array.from(val.data, Number);
     }
   }
 
@@ -121,7 +141,7 @@ async function predict(features) {
   }
 
   if (labelIndex === null) {
-    throw new Error("Não foi possível interpretar a saída do ONNX.");
+    throw new Error("Não foi possível decodificar saída ONNX.");
   }
 
   const score = probabilities ? probabilities[labelIndex] : null;
@@ -145,13 +165,14 @@ async function sendKey(action, value) {
 
     return Boolean(response?.ok);
   } catch (error) {
-    log("Content Script: " + error.message);
     return false;
   }
 }
 
 function updateTypedPreview() {
-  typedPreview.textContent = state.typedText.length ? state.typedText : "—";
+  if (typedPreview) {
+    typedPreview.textContent = state.typedText.length ? state.typedText : "—";
+  }
 }
 
 async function typeChar(char) {
@@ -186,6 +207,8 @@ async function processFrame() {
     state.busy = true;
 
     try {
+      updateFPS();
+
       const result = await state.landmarker.detectForVideo(video, performance.now());
       const hand = result?.landmarks?.[0];
       const features = buildFeatures(hand);
@@ -194,27 +217,31 @@ async function processFrame() {
 
       if (!features) {
         confirmedLabel = engine.processNoHand();
-        text.textContent = "—";
-        confidence.textContent = "Confiança: —";
+        predictedLetter.textContent = "—";
+        confidenceValue.textContent = "0%";
+        confidenceBar.style.width = "0%";
       } else {
         const prediction = await predict(features);
 
-        text.textContent = prediction.label;
-        confidence.textContent =
-          prediction.confidence == null
-            ? "Confiança: indisponível"
-            : `Confiança: ${(prediction.confidence * 100).toFixed(1)}%`;
+        predictedLetter.textContent = prediction.label;
+
+        if (prediction.confidence != null) {
+          const pct = Math.min(100, Math.max(0, prediction.confidence * 100));
+          confidenceValue.textContent = `${pct.toFixed(0)}%`;
+          confidenceBar.style.width = `${pct.toFixed(0)}%`;
+        } else {
+          confidenceValue.textContent = "—";
+          confidenceBar.style.width = "100%";
+        }
 
         confirmedLabel = engine.processDetection(prediction);
       }
-
-      stabilityFill.style.width = `${(engine.progress * 100).toFixed(0)}%`;
 
       if (confirmedLabel && !state.paused) {
         await typeChar(confirmedLabel);
       }
     } catch (error) {
-      log("Frame: " + error.message);
+      log("Erro no frame: " + error.message);
     } finally {
       state.busy = false;
     }
@@ -224,9 +251,14 @@ async function processFrame() {
 }
 
 async function startCamera() {
-  try {
-    status.textContent = "Inicializando...";
+  if (permissionNotice) {
+    permissionNotice.classList.add("hidden");
+  }
 
+  statusBadge.textContent = "Iniciando...";
+  statusBadge.className = "badge status-standby";
+
+  try {
     state.stream = await navigator.mediaDevices.getUserMedia({
       video: {
         width: 640,
@@ -239,28 +271,54 @@ async function startCamera() {
     video.srcObject = state.stream;
     await video.play();
 
-    await loadModel();
-    await loadMediaPipe();
+    if (!state.session) {
+      statusBadge.textContent = "Carregando IA...";
+      await loadModel();
+    }
+
+    if (!state.landmarker) {
+      statusBadge.textContent = "Carregando Mãos...";
+      await loadMediaPipe();
+    }
+
+    if (cameraPlaceholder) {
+      cameraPlaceholder.classList.add("hidden");
+    }
 
     engine.reset();
     state.typedText = "";
     state.paused = false;
     updateTypedPreview();
-    togglePause.textContent = "Pausar soletração";
 
     state.running = true;
-    start.disabled = true;
-    stop.disabled = false;
-    togglePause.disabled = false;
-    sendSpace.disabled = false;
-    sendBackspace.disabled = false;
-    clearTyped.disabled = false;
-    status.textContent = "Soletração automática ativa";
+    btnStart.disabled = true;
+    btnStop.disabled = false;
+
+    if (togglePause) togglePause.disabled = false;
+    if (sendSpace) sendSpace.disabled = false;
+    if (sendBackspace) sendBackspace.disabled = false;
+    if (clearTyped) clearTyped.disabled = false;
+
+    statusBadge.textContent = "Ao vivo";
+    statusBadge.className = "badge status-active";
 
     requestAnimationFrame(processFrame);
   } catch (error) {
-    status.textContent = "Erro: " + error.message;
-    log(error.stack || error.message);
+    log("Erro na câmera: " + error.message);
+    statusBadge.textContent = "Inativo";
+    statusBadge.className = "badge status-standby";
+
+    // Trata bloqueio de permissão no Sidepanel abrindo uma aba do Chrome para conceder
+    if (
+      error.name === "NotAllowedError" ||
+      error.name === "SecurityError" ||
+      error.message.includes("dismissed")
+    ) {
+      if (permissionNotice) {
+        permissionNotice.classList.remove("hidden");
+      }
+      chrome.tabs.create({ url: chrome.runtime.getURL("sidepanel.html") });
+    }
   }
 }
 
@@ -273,27 +331,47 @@ function stopCamera() {
   }
 
   video.srcObject = null;
-  start.disabled = false;
-  stop.disabled = true;
-  togglePause.disabled = true;
-  sendSpace.disabled = true;
-  sendBackspace.disabled = true;
-  clearTyped.disabled = true;
-  stabilityFill.style.width = "0%";
-  status.textContent = "Câmera parada";
+  if (cameraPlaceholder) {
+    cameraPlaceholder.classList.remove("hidden");
+  }
+
+  btnStart.disabled = false;
+  btnStop.disabled = true;
+
+  if (togglePause) togglePause.disabled = true;
+  if (sendSpace) sendSpace.disabled = true;
+  if (sendBackspace) sendBackspace.disabled = true;
+  if (clearTyped) clearTyped.disabled = true;
+
+  predictedLetter.textContent = "—";
+  confidenceValue.textContent = "0%";
+  confidenceBar.style.width = "0%";
+  if (fpsCounter) fpsCounter.textContent = "0 FPS";
+
+  statusBadge.textContent = "Inativo";
+  statusBadge.className = "badge status-standby";
 }
 
 function onTogglePause() {
   state.paused = !state.paused;
-  togglePause.textContent = state.paused ? "Retomar soletração" : "Pausar soletração";
-  status.textContent = state.paused ? "Soletração pausada" : "Soletração automática ativa";
+  if (togglePause) {
+    togglePause.textContent = state.paused ? "Retomar soletração" : "Pausar soletração";
+  }
 }
 
-start.addEventListener("click", startCamera);
-stop.addEventListener("click", stopCamera);
-togglePause.addEventListener("click", onTogglePause);
-sendSpace.addEventListener("click", () => typeChar(" "));
-sendBackspace.addEventListener("click", () => typeBackspace());
-clearTyped.addEventListener("click", () => clearAllTyped());
+// Event Listeners
+btnStart.addEventListener("click", startCamera);
+btnStop.addEventListener("click", stopCamera);
 
-log("SignForest carregado.");
+if (btnOpenPermission) {
+  btnOpenPermission.addEventListener("click", () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL("sidepanel.html") });
+  });
+}
+
+if (togglePause) togglePause.addEventListener("click", onTogglePause);
+if (sendSpace) sendSpace.addEventListener("click", () => typeChar(" "));
+if (sendBackspace) sendBackspace.addEventListener("click", () => typeBackspace());
+if (clearTyped) clearTyped.addEventListener("click", () => clearAllTyped());
+
+log("RVL Libras pronto.");

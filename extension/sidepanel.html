@@ -1,65 +1,87 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SignForest</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RVL Libras</title>
   <link rel="stylesheet" href="sidepanel.css">
 </head>
 <body>
-  <main class="app">
-    <header>
-      <h1>SignForest</h1>
-      <p>LIBRAS → texto</p>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-brand">
+        <div class="logo-icon">🤟</div>
+        <div>
+          <h1 class="title">RVL Libras</h1>
+          <p class="subtitle">Tradução de Datilologia em Tempo Real</p>
+        </div>
+      </div>
+      <span id="statusBadge" class="badge status-standby">Inativo</span>
     </header>
 
-    <section class="camera">
-      <video id="video" autoplay playsinline muted></video>
-    </section>
+    <!-- Área de Vídeo -->
+    <div class="video-card">
+      <div class="video-wrapper">
+        <video id="webcam" autoplay playsinline muted></video>
+        <canvas id="output_canvas"></canvas>
+        <div id="cameraPlaceholder" class="placeholder">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M23 7l-7 5 7 5V7z"></path>
+            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
+          </svg>
+          <p>Câmera pausada</p>
+          <span class="subtext">Clique em "Iniciar Câmera" para começar</span>
+        </div>
+      </div>
+      
+      <!-- Controles -->
+      <div class="controls-row">
+        <button id="btnStart" class="btn btn-primary">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+            <polygon points="5 3 19 12 5 21 5 3"></polygon>
+          </svg>
+          Iniciar Câmera
+        </button>
+        <button id="btnStop" class="btn btn-danger" disabled>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+            <rect x="6" y="6" width="12" height="12"></rect>
+          </svg>
+          Parar
+        </button>
+      </div>
 
-    <section class="buttons">
-      <button id="startCamera">Iniciar câmera</button>
-      <button id="stopCamera" disabled>Parar</button>
-    </section>
+      <!-- Banner de Permissão (caso ocorra bloqueio) -->
+      <div id="permissionNotice" class="permission-banner hidden">
+        <p>⚠️ <strong>Permissão necessária:</strong> O Chrome precisa que você autorize a câmera na página de permissões.</p>
+        <button id="btnOpenPermission" class="btn btn-secondary btn-sm">Liberar Acesso à Câmera</button>
+      </div>
+    </div>
 
-    <div id="status">Câmera parada</div>
+    <!-- Resultados -->
+    <section class="results-card">
+      <div class="result-header">
+        <span class="label-text">Sinal Reconhecido</span>
+        <span id="fpsCounter" class="fps-tag">0 FPS</span>
+      </div>
 
-    <section class="result">
-      <small>Sinal detectado</small>
-      <strong id="recognizedText">—</strong>
-      <span id="confidence">Confiança: —</span>
-      <div class="stability-track">
-        <div id="stabilityFill" class="stability-fill"></div>
+      <div class="prediction-box">
+        <span id="predictedLetter" class="predicted-char">—</span>
+      </div>
+
+      <!-- Barra de Confiança -->
+      <div class="confidence-container">
+        <div class="confidence-header">
+          <span>Grau de Certeza</span>
+          <span id="confidenceValue">0%</span>
+        </div>
+        <div class="progress-track">
+          <div id="confidenceBar" class="progress-fill" style="width: 0%;"></div>
+        </div>
       </div>
     </section>
+  </div>
 
-    <section class="typed">
-      <small>Texto digitado nesta sessão</small>
-      <strong id="typedPreview">—</strong>
-    </section>
-
-    <section class="single-button">
-      <button id="togglePause" disabled>Pausar soletração</button>
-    </section>
-
-    <section class="buttons">
-      <button id="sendSpace" disabled>Espaço</button>
-      <button id="sendBackspace" disabled>Apagar</button>
-    </section>
-    <section class="single-button">
-      <button id="clearTyped" disabled>Limpar texto digitado</button>
-    </section>
-
-    <details>
-      <summary>Diagnóstico</summary>
-      <pre id="diagnostics"></pre>
-    </details>
-  </main>
-
-  <!-- ort.min.js expõe window.ort (script clássico); os assets do MediaPipe são
-       carregados como módulo ES diretamente por sidepanel.js. Nenhum dos dois
-       depende de CDN — todos os arquivos ficam em assets/. -->
-  <script src="assets/onnx/ort.min.js"></script>
-  <script type="module" src="sidepanel.js"></script>
+  <script src="sidepanel.js"></script>
 </body>
 </html>

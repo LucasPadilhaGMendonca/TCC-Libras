@@ -1,13 +1,18 @@
 {
   "manifest_version": 3,
-  "name": "SignForest - LIBRAS para Busca",
+  "name": "RVL Libras",
   "version": "0.3.0",
   "description": "Reconhecimento local de sinais em LIBRAS por webcam, com soletração automática.",
   "minimum_chrome_version": "114",
-  "permissions": ["sidePanel", "activeTab"],
-  "host_permissions": ["<all_urls>"],
+  "permissions": [
+    "sidePanel",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
   "action": {
-    "default_title": "Abrir SignForest"
+    "default_title": "Abrir RVL Libras"
   },
   "side_panel": {
     "default_path": "sidepanel.html"
@@ -15,11 +20,13 @@
   "background": {
     "service_worker": "background.js"
   },
-  "content_scripts": [{
-    "matches": ["<all_urls>"],
-    "js": ["content.js"],
-    "run_at": "document_idle"
-  }],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   }
