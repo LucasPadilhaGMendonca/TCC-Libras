@@ -1,46 +1,46 @@
 import os
-import json
 import pickle
-from skl2onnx import convert_sklearn
-from skl2onnx.common.data_types import FloatTensorType
+import json
+import numpy as np
 
-MODEL_INPUT = "training/model.p"
-ONNX_OUTPUT = "extension/assets/onnx/model.onnx"
-LABELS_OUTPUT = "extension/assets/onnx/labels.json"
+MODEL_INPUT = os.path.join(os.path.dirname(__file__), "model.p")
+ONNX_OUTPUT = os.path.join(os.path.dirname(__file__), "..", "extension", "assets", "onnx", "model.onnx")
+LABELS_OUTPUT = os.path.join(os.path.dirname(__file__), "..", "extension", "assets", "onnx", "labels.json")
 
-if not os.path.exists(MODEL_INPUT):
-    raise FileNotFoundError(f"{MODEL_INPUT} não encontrado.")
+def validate_feature_count(model, expected_features=84):
+    """Valida se o modelo possui o número esperado de features."""
+    n_features = getattr(model, "n_features_in_", None)
+    if n_features is not None and n_features != expected_features:
+        raise ValueError(f"Modelo possui {n_features} features, esperado {expected_features}.")
+    return True
 
-with open(MODEL_INPUT, "rb") as f:
-    payload = pickle.load(f)
+def export_to_onnx():
+    if not os.path.exists(MODEL_INPUT):
+        raise FileNotFoundError(f"{MODEL_INPUT} não encontrado.")
 
-model = payload["model"]
+    with open(MODEL_INPUT, "rb") as f:
+        data = pickle.load(f)
 
-# 84 features (bimanual: 2 mãos x 21 pontos x 2 eixos)
-initial_type = [("input", FloatTensorType([None, 84]))]
+    model = data["model"]
+    labels = data["labels"]
 
-print("Convertendo modelo para ONNX (84 features, IR Version <= 8 / target_opset=15)...")
+    validate_feature_count(model, expected_features=84)
 
-# target_opset=15 garante compatibilidade com o runtime web da extensão
-onnx_model = convert_sklearn(
-    model,
-    initial_types=initial_type,
-    target_opset=15,
-    options={id(model): {"zipmap": False}}
-)
+    from skl2onnx import convert_sklearn
+    from skl2onnx.common.data_types import FloatTensorType
 
-# Força ir_version = 8 caso a biblioteca tente gravar 9 ou 10
-onnx_model.ir_version = 8
+    initial_type = [("float_input", FloatTensorType([None, 84]))]
+    onx = convert_sklearn(model, initial_types=initial_type, target_opset=15)
 
-os.makedirs(os.path.dirname(ONNX_OUTPUT), exist_ok=True)
-with open(ONNX_OUTPUT, "wb") as f:
-    f.write(onnx_model.SerializeToString())
+    os.makedirs(os.path.dirname(ONNX_OUTPUT), exist_ok=True)
+    with open(ONNX_OUTPUT, "wb") as f:
+        f.write(onx.SerializeToString())
 
-print(f"Modelo ONNX gerado com sucesso: {os.path.abspath(ONNX_OUTPUT)}")
+    with open(LABELS_OUTPUT, "w", encoding="utf-8") as f:
+        json.dump(labels, f, ensure_ascii=False, indent=2)
 
-# Exportação do mapeamento de classes
-labels_list = [str(cls) for cls in model.classes_]
-with open(LABELS_OUTPUT, "w", encoding="utf-8") as f:
-    json.dump(labels_list, f, ensure_ascii=False, indent=2)
+    print(f"Modelo ONNX gerado com sucesso: {ONNX_OUTPUT}")
+    print(f"Labels salvas em: {LABELS_OUTPUT}")
 
-print(f"Labels salvas em: {os.path.abspath(LABELS_OUTPUT)}")
+if __name__ == "__main__":
+    export_to_onnx()
