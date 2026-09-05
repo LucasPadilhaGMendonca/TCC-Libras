@@ -1,83 +1,52 @@
-// Máquina de estados que transforma uma sequência ruidosa de predições por
-// frame em letras confirmadas, evitando (a) ruído/transição entre sinais e
-// (b) repetição infinita da mesma letra enquanto o usuário mantém a mão parada.
-//
-// Regra: uma letra só é confirmada depois de aparecer de forma estável (mesma
-// label, confiança acima do limiar) por `stableFramesRequired` frames
-// seguidos. Depois de confirmada, a mesma letra só pode ser confirmada de
-// novo depois que `releaseFramesRequired` frames consecutivos sem mão
-// detectada forem observados (o usuário precisa "soltar" o sinal).
 export class SpellingEngine {
-  constructor({
-    stableFramesRequired = 12,
-    confidenceThreshold = 0.6,
-    releaseFramesRequired = 4
-  } = {}) {
-    this.stableFramesRequired = stableFramesRequired;
-    this.confidenceThreshold = confidenceThreshold;
-    this.releaseFramesRequired = releaseFramesRequired;
-
-    this.streakLabel = null;
-    this.streakCount = 0;
-    this.releaseCount = 0;
+  constructor(options = {}) {
+    this.stabilityThreshold = options.stabilityThreshold ?? 8; // Quadros consecutivos para confirmar
+    this.history = [];
     this.lastConfirmed = null;
+    this.progress = 0;
   }
 
-  get progress() {
-    return Math.min(1, this.streakCount / this.stableFramesRequired);
-  }
-
-  get pendingLabel() {
-    return this.streakLabel;
-  }
-
-  reset() {
-    this.streakLabel = null;
-    this.streakCount = 0;
-    this.releaseCount = 0;
-    this.lastConfirmed = null;
-  }
-
-  // Chamado quando nenhuma mão foi detectada no frame atual.
-  processNoHand() {
-    this.streakLabel = null;
-    this.streakCount = 0;
-    this.releaseCount += 1;
-
-    if (this.releaseCount >= this.releaseFramesRequired) {
-      this.lastConfirmed = null;
+  processDetection(prediction) {
+    if (!prediction || !prediction.label) {
+      return this.processNoHand();
     }
 
-    return null;
-  }
+    const current = prediction.label;
 
-  // Chamado com a predição do frame atual ({ label, confidence }).
-  // confidence pode ser null quando o modelo não expõe probabilidades.
-  // Retorna a letra confirmada neste frame, ou null.
-  processDetection({ label, confidence }) {
-    this.releaseCount = 0;
-
-    const confidenceOk = confidence == null || confidence >= this.confidenceThreshold;
-
-    if (!confidenceOk) {
-      this.streakLabel = null;
-      this.streakCount = 0;
+    // Se acabou de confirmar esse sinal e ainda está segurando a mão na mesma posição, não digita de novo
+    if (current === this.lastConfirmed) {
+      this.progress = 0;
       return null;
     }
 
-    if (this.streakLabel === label) {
-      this.streakCount += 1;
+    if (this.history.length > 0 && this.history[this.history.length - 1] === current) {
+      this.history.push(current);
     } else {
-      this.streakLabel = label;
-      this.streakCount = 1;
+      this.history = [current];
     }
 
-    if (this.streakCount >= this.stableFramesRequired && label !== this.lastConfirmed) {
-      this.lastConfirmed = label;
-      this.streakCount = 0;
-      return label;
+    this.progress = Math.min(1, this.history.length / this.stabilityThreshold);
+
+    if (this.history.length >= this.stabilityThreshold) {
+      this.lastConfirmed = current;
+      this.history = [];
+      this.progress = 0;
+      return current;
     }
 
     return null;
+  }
+
+  processNoHand() {
+    this.history = [];
+    this.progress = 0;
+    this.lastConfirmed = null; // Libera para fazer o mesmo sinal novamente após abaixar as mãos
+    return null;
+  }
+
+  reset() {
+    this.history = [];
+    this.progress = 0;
+    this.lastConfirmed = null;
   }
 }

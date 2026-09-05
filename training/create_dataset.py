@@ -1,111 +1,108 @@
 ﻿import os
 import pickle
-from pathlib import Path
 import cv2
+import numpy as np
 import mediapipe as mp
-from mediapipe.tasks import python as mp_python
+from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
-ROOT = Path(__file__).resolve().parents[1]
-FRAME_DIR = ROOT / "dataset" / "frames"
-OUT_FILE = ROOT / "dataset" / "data.pickle"
-MODEL_PATH = ROOT / "training" / "hand_landmarker.task"
+DATA_DIR = "dataset/frames"
+OUTPUT_FILE = "dataset/data.pickle"
+MODEL_PATH = "training/hand_landmarker.task"
 
-def build_features(hand_landmarks):
-    """
-    Normaliza os 21 landmarks da mão em 42 features (x - min(X), y - min(Y)).
-    """
-    data_aux = []
-    x_ = [landmark.x for landmark in hand_landmarks]
-    y_ = [landmark.y for landmark in hand_landmarks]
+if not os.path.exists(MODEL_PATH):
+    # Fallback para o caminho da extensão se não estiver em training
+    MODEL_PATH = "extension/assets/mediapipe/hand_landmarker.task"
 
-    for landmark in hand_landmarks:
-        data_aux.append(landmark.x - min(x_))
-        data_aux.append(landmark.y - min(y_))
+if not os.path.exists(MODEL_PATH):
+    raise FileNotFoundError(f"Arquivo de modelo não encontrado: {MODEL_PATH}")
 
-    return data_aux if len(data_aux) == 42 else None
+base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
+options = vision.HandLandmarkerOptions(
+    base_options=base_options,
+    running_mode=vision.RunningMode.IMAGE,
+    num_hands=2,
+    min_hand_detection_confidence=0.3
+)
 
-def main():
-    if not FRAME_DIR.exists():
-        raise SystemExit(
-            "dataset/frames não encontrado. Execute primeiro: python training/extract_frames.py"
-        )
+landmarker = vision.HandLandmarker.create_from_options(options)
 
-    if not MODEL_PATH.exists():
-        raise SystemExit(
-            f"Modelo {MODEL_PATH} não encontrado. Baixe o hand_landmarker.task."
-        )
+data = []
+labels = []
 
-    # Configuração da nova API MediaPipe Tasks
-    base_options = mp_python.BaseOptions(model_asset_path=str(MODEL_PATH))
-    options = vision.HandLandmarkerOptions(
-        base_options=base_options,
-        running_mode=vision.RunningMode.IMAGE,
-        num_hands=1,
-        min_hand_detection_confidence=0.3
-    )
+total_frames = 0
+valid_frames = 0
+no_hand_frames = 0
 
-    data = []
-    labels = []
-    groups = []
-    total_frames = 0
-    valid_frames = 0
-    no_hand = 0
-    multiple_hands = 0
+def extract_landmarks(hand_landmarks):
+    coords = []
+    for lm in hand_landmarks:
+        coords.extend([lm.x, lm.y])
+    
+    # Normalização em relação ao ponto do pulso (landmark 0)
+    base_x = coords[0]
+    base_y = coords[1]
+    norm_coords = []
+    for i in range(0, len(coords), 2):
+        norm_coords.append(coords[i] - base_x)
+        norm_coords.append(coords[i+1] - base_y)
+    return norm_coords
 
-    class_dirs = [p for p in sorted(FRAME_DIR.iterdir()) if p.is_dir()]
+print("Iniciando extração bimanual (84 features com Tasks API)...")
 
-    with vision.HandLandmarker.create_from_options(options) as detector:
-        for class_dir in class_dirs:
-            class_label = class_dir.name
-            print(f"\n=== Processando classe: {class_label} ===")
+for dir_ in sorted(os.listdir(DATA_DIR)):
+    dir_path = os.path.join(DATA_DIR, dir_)
+    if not os.path.isdir(dir_path):
+        continue
 
-            for image_path in sorted(class_dir.glob("*")):
-                if image_path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
-                    continue
+    print(f"=== Processando classe: {dir_} ===")
 
-                total_frames += 1
-                image = cv2.imread(str(image_path))
-                if image is None:
-                    continue
+    for img_path in os.listdir(dir_path):
+        if not img_path.lower().endswith((".png", ".jpg", ".jpeg")):
+            continue
 
-                image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
+        total_frames += 1
+        full_path = os.path.join(dir_path, img_path)
+        img = cv2.imread(full_path)
+        if img is None:
+            continue
 
-                detection_result = detector.detect(mp_image)
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
+        
+        results = landmarker.detect(mp_image)
 
-                if not detection_result.hand_landmarks:
-                    no_hand += 1
-                    continue
+        if not results.hand_landmarks:
+            no_hand_frames += 1
+            continue
 
-                if len(detection_result.hand_landmarks) != 1:
-                    multiple_hands += 1
-                    continue
+        hand_list = results.hand_landmarks
+        combined_features = []
 
-                features = build_features(detection_result.hand_landmarks[0])
-                if features is not None:
-                    # Nome do vídeo de origem (extract_frames.py salva frames como
-                    # "<video>_frame_0000123.jpg"), usado para não vazar o mesmo
-                    # vídeo entre treino e teste em train_classifier.py.
-                    video_name = image_path.stem.rsplit("_frame_", 1)[0]
+        # Mão 1 (42 features)
+        combined_features.extend(extract_landmarks(hand_list[0]))
 
-                    data.append(features)
-                    labels.append(class_label)
-                    groups.append(video_name)
-                    valid_frames += 1
+        # Mão 2 (42 features) - completa com zeros se houver só 1 mão
+        if len(hand_list) > 1:
+            combined_features.extend(extract_landmarks(hand_list[1]))
+        else:
+            combined_features.extend([0.0] * 42)
 
-    OUT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(OUT_FILE, "wb") as f:
-        pickle.dump({"data": data, "labels": labels, "groups": groups}, f)
+        if len(combined_features) == 84:
+            data.append(combined_features)
+            labels.append(dir_)
+            valid_frames += 1
 
-    print("\n==============================")
-    print(f"Frames analisados:    {total_frames}")
-    print(f"Frames válidos:       {valid_frames}")
-    print(f"Sem mão detectada:    {no_hand}")
-    print(f"Mais de uma mão:      {multiple_hands}")
-    print(f"Features por amostra: 42")
-    print(f"Arquivo gerado:       {OUT_FILE}")
-    print("==============================")
+print("\n" + "=" * 30)
+print(f"Frames analisados:    {total_frames}")
+print(f"Frames válidos:       {valid_frames}")
+print(f"Sem mão detectada:    {no_hand_frames}")
+print(f"Features por amostra: 84")
+print(f"Arquivo gerado:       {os.path.abspath(OUTPUT_FILE)}")
+print("=" * 30)
 
-if __name__ == "__main__":
-    main()
+os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
+with open(OUTPUT_FILE, "wb") as f:
+    pickle.dump({"data": data, "labels": labels}, f)
+
+landmarker.close()

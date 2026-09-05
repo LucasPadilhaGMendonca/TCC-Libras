@@ -1,20 +1,39 @@
-// Mesma lógica de normalização usada em training/create_dataset.py:
-// para cada um dos 21 landmarks da mão, calcula (x - min(X), y - min(Y)),
-// gerando 42 features na ordem [x0,y0,x1,y1,...,x20,y20].
-export function buildFeatures(hand) {
-  if (!hand || hand.length !== 21) return null;
-
-  const xs = hand.map(p => p.x);
-  const ys = hand.map(p => p.y);
-  const minX = Math.min(...xs);
-  const minY = Math.min(...ys);
-
-  const features = [];
-
-  for (const p of hand) {
-    features.push(p.x - minX);
-    features.push(p.y - minY);
+/**
+ * Normaliza os landmarks de uma mão em relação ao pulso (ponto 0).
+ * Retorna sempre 42 floats (21 marcos * 2 eixos).
+ */
+function normalizeHand(landmarks) {
+  if (!landmarks || landmarks.length === 0) {
+    return new Array(42).fill(0.0);
   }
 
-  return features.length === 42 ? features : null;
+  const base = landmarks[0];
+  const features = [];
+
+  for (let i = 0; i < landmarks.length; i++) {
+    features.push(landmarks[i].x - base.x);
+    features.push(landmarks[i].y - base.y);
+  }
+
+  return features;
+}
+
+/**
+ * Constrói o vetor bimanual de entrada com exatamente 84 valores.
+ * @param {Array} multiHandLandmarks Array de mãos retornado pelo MediaPipe
+ * @returns {Array<number>|null} Vetor de 84 floats ou null se nenhuma mão for visível
+ */
+export function buildFeatures(multiHandLandmarks) {
+  if (!multiHandLandmarks || multiHandLandmarks.length === 0) {
+    return null;
+  }
+
+  const hand1 = multiHandLandmarks[0];
+  const hand2 = multiHandLandmarks.length > 1 ? multiHandLandmarks[1] : null;
+
+  const featuresHand1 = normalizeHand(hand1);
+  const featuresHand2 = normalizeHand(hand2);
+
+  const combined = [...featuresHand1, ...featuresHand2];
+  return combined.length === 84 ? combined : null;
 }

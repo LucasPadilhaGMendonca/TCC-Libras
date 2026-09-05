@@ -2,15 +2,11 @@ import { buildFeatures } from "./lib/features.mjs";
 import { SpellingEngine } from "./lib/spelling.mjs";
 import { FilesetResolver, HandLandmarker } from "./assets/mediapipe/vision_bundle.mjs";
 
-const LABELS = [
-  "A", "B", "C", "D", "E", "F", "G", "I", "L", "M",
-  "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W"
-];
+let LABELS = [];
 
 const state = {
   stream: null,
   running: false,
-  paused: false,
   landmarker: null,
   session: null,
   busy: false,
@@ -20,9 +16,13 @@ const state = {
   fps: 0
 };
 
-const engine = new SpellingEngine();
+const engine = new SpellingEngine({
+  stableFramesRequired: 6,
+  confidenceThreshold: 0.40,
+  releaseFramesRequired: 3
+});
 
-// Elementos da interface
+// Elementos DOM
 const video = document.getElementById("webcam");
 const btnStart = document.getElementById("btnStart");
 const btnStop = document.getElementById("btnStop");
@@ -33,23 +33,14 @@ const btnOpenPermission = document.getElementById("btnOpenPermission");
 
 const predictedLetter = document.getElementById("predictedLetter");
 const confidenceValue = document.getElementById("confidenceValue");
-const confidenceBar = document.getElementById("confidenceBar");
+const stabilityFill = document.getElementById("stabilityFill");
 const fpsCounter = document.getElementById("fpsCounter");
 
-// Elementos opcionais de soletração / diagnóstico
-const togglePause = document.getElementById("togglePause");
-const sendSpace = document.getElementById("sendSpace");
-const sendBackspace = document.getElementById("sendBackspace");
-const clearTyped = document.getElementById("clearTyped");
 const typedPreview = document.getElementById("typedPreview");
-const diagnostics = document.getElementById("diagnostics");
-
-function log(message) {
-  if (diagnostics) {
-    diagnostics.textContent += message + "\n";
-  }
-  console.log("[RVL Libras]", message);
-}
+const btnSpace = document.getElementById("btnSpace");
+const btnBackspace = document.getElementById("btnBackspace");
+const btnClear = document.getElementById("btnClear");
+const btnSearch = document.getElementById("btnSearch");
 
 function updateFPS() {
   const now = performance.now();
@@ -65,22 +56,37 @@ function updateFPS() {
   }
 }
 
+async function loadLabels() {
+  try {
+    const res = await fetch(chrome.runtime.getURL("assets/onnx/labels.json"));
+    if (res.ok) {
+      LABELS = await res.json();
+      console.log("[RVL Libras] Labels carregadas:", LABELS);
+      return;
+    }
+  } catch (_) {}
+
+  LABELS = [
+    "A", "AMOR", "B", "C", "CASA", "D", "E", "F", "G", "I",
+    "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W"
+  ];
+}
+
 async function loadModel() {
   if (!window.ort) {
-    throw new Error("ONNX Runtime Web (ort.min.js) não foi encontrado no escopo global.");
+    throw new Error("ort.min.js não carregado.");
   }
 
   window.ort.env.wasm.numThreads = 1;
   window.ort.env.wasm.simd = false;
+  window.ort.env.wasm.proxy = false;
   window.ort.env.wasm.wasmPaths = chrome.runtime.getURL("assets/onnx/");
 
   const modelUrl = chrome.runtime.getURL("assets/onnx/model.onnx");
-
   state.session = await window.ort.InferenceSession.create(modelUrl, {
-    executionProviders: ["wasm"]
+    executionProviders: ["wasm"],
+    graphOptimizationLevel: "disabled"
   });
-
-  log("Modelo ONNX carregado com sucesso.");
 }
 
 async function loadMediaPipe() {
@@ -93,155 +99,132 @@ async function loadMediaPipe() {
       modelAssetPath: chrome.runtime.getURL("assets/mediapipe/hand_landmarker.task")
     },
     runningMode: "VIDEO",
-    numHands: 1,
-    minHandDetectionConfidence: 0.3
+    numHands: 2,
+    minHandDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
   });
-
-  log("MediaPipe HandLandmarker carregado.");
 }
 
 async function predict(features) {
+  if (!state.session || !features || features.length !== 84) return null;
+
   const inputName = state.session.inputNames[0];
+  const tensor = new window.ort.Tensor("float32", Float32Array.from(features), [1, 84]);
+  const result = await state.session.run({ [inputName]: tensor });
 
-  const tensor = new window.ort.Tensor(
-    "float32",
-    Float32Array.from(features),
-    [1, 42]
-  );
-
-  const result = await state.session.run({
-    [inputName]: tensor
-  });
-
-  const outputs = state.session.outputNames.map(name => ({
-    name,
-    value: result[name]
-  }));
-
-  let labelIndex = null;
   let probabilities = null;
 
-  for (const item of outputs) {
-    const val = item.value;
-
-    if (val?.data?.length === 1) {
-      const candidate = Number(val.data[0]);
-      if (Number.isInteger(candidate)) {
-        labelIndex = candidate;
-      }
-    }
-
+  for (const name of state.session.outputNames) {
+    const val = result[name];
     if (val?.data?.length === LABELS.length) {
       probabilities = Array.from(val.data, Number);
+      break;
     }
   }
 
-  if (labelIndex === null && probabilities) {
-    labelIndex = probabilities.indexOf(Math.max(...probabilities));
+  if (probabilities) {
+    const maxProb = Math.max(...probabilities);
+    const labelIndex = probabilities.indexOf(maxProb);
+
+    // Limiar balanceado para 51 classes: 40%
+    if (labelIndex === -1 || maxProb < 0.40) {
+      return null;
+    }
+
+    return {
+      label: LABELS[labelIndex] ?? String(labelIndex),
+      confidence: maxProb
+    };
   }
 
-  if (labelIndex === null) {
-    throw new Error("Não foi possível decodificar a predição da saída ONNX.");
-  }
-
-  const score = probabilities ? probabilities[labelIndex] : null;
-
-  return {
-    label: LABELS[labelIndex] ?? String(labelIndex),
-    confidence: score
-  };
+  return null;
 }
 
-async function sendKey(action, value) {
+async function sendToContentScript(action, value = "") {
   try {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id) return false;
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (activeTab?.id) {
+      await chrome.tabs.sendMessage(activeTab.id, {
+        type: "SIGNFOREST_KEY",
+        action,
+        value
+      });
+    }
+  } catch (_) {}
+}
 
-    const response = await chrome.tabs.sendMessage(tab.id, {
-      type: "SIGNFOREST_KEY",
-      action,
-      value
-    });
+function updateTypedDisplay() {
+  typedPreview.textContent = state.typedText.length > 0 ? state.typedText : "—";
+}
 
-    return Boolean(response?.ok);
-  } catch (error) {
-    return false;
+function appendText(text) {
+  const toAdd = text.length > 1 ? `${text} ` : text;
+  state.typedText += toAdd;
+  updateTypedDisplay();
+  sendToContentScript("char", toAdd);
+}
+
+function handleBackspace() {
+  if (state.typedText.length > 0) {
+    state.typedText = state.typedText.trimEnd().slice(0, -1);
+    updateTypedDisplay();
+    sendToContentScript("backspace");
   }
 }
 
-function updateTypedPreview() {
-  if (typedPreview) {
-    typedPreview.textContent = state.typedText.length ? state.typedText : "—";
-  }
-}
-
-async function typeChar(char) {
-  const ok = await sendKey("char", char);
-  if (ok) {
-    state.typedText += char;
-    updateTypedPreview();
-  }
-}
-
-async function typeBackspace() {
-  const ok = await sendKey("backspace");
-  if (ok && state.typedText.length) {
-    state.typedText = state.typedText.slice(0, -1);
-    updateTypedPreview();
-  }
-}
-
-async function clearAllTyped() {
-  const count = state.typedText.length;
-  for (let i = 0; i < count; i++) {
-    await sendKey("backspace");
-  }
+function handleClear() {
   state.typedText = "";
-  updateTypedPreview();
+  updateTypedDisplay();
+}
+
+function handleSearch() {
+  const query = state.typedText.trim();
+  if (query.length > 0) {
+    chrome.tabs.create({ url: `https://www.google.com/search?q=${encodeURIComponent(query)}` });
+  }
 }
 
 async function processFrame() {
   if (!state.running) return;
 
-  if (!state.busy) {
+  updateFPS();
+
+  if (!state.busy && state.landmarker && state.session) {
     state.busy = true;
 
     try {
-      updateFPS();
-
       const result = await state.landmarker.detectForVideo(video, performance.now());
-      const hand = result?.landmarks?.[0];
-      const features = buildFeatures(hand);
+      const hands = result?.landmarks ?? [];
 
-      let confirmedLabel = null;
-
-      if (!features) {
-        confirmedLabel = engine.processNoHand();
-        if (predictedLetter) predictedLetter.textContent = "—";
-        if (confidenceValue) confidenceValue.textContent = "0%";
-        if (confidenceBar) confidenceBar.style.width = "0%";
+      if (hands.length === 0) {
+        engine.processNoHand();
+        predictedLetter.textContent = "—";
+        stabilityFill.style.width = "0%";
+        confidenceValue.textContent = "0%";
       } else {
-        const prediction = await predict(features);
+        const features = buildFeatures(hands);
+        const prediction = features ? await predict(features) : null;
 
-        if (predictedLetter) predictedLetter.textContent = prediction.label;
+        if (prediction) {
+          predictedLetter.textContent = prediction.label;
+          const confirmedWord = engine.processDetection(prediction);
 
-        if (prediction.confidence != null) {
-          const pct = Math.min(100, Math.max(0, prediction.confidence * 100));
-          if (confidenceValue) confidenceValue.textContent = `${pct.toFixed(0)}%`;
-          if (confidenceBar) confidenceBar.style.width = `${pct.toFixed(0)}%`;
+          const progressPercent = Math.min(100, Math.round(engine.progress * 100));
+          stabilityFill.style.width = `${progressPercent}%`;
+          confidenceValue.textContent = `${Math.round(prediction.confidence * 100)}%`;
+
+          if (confirmedWord) {
+            appendText(confirmedWord);
+          }
         } else {
-          if (confidenceValue) confidenceValue.textContent = "—";
-          if (confidenceBar) confidenceBar.style.width = "100%";
+          engine.processNoHand();
+          predictedLetter.textContent = "—";
+          stabilityFill.style.width = "0%";
+          confidenceValue.textContent = "0%";
         }
-
-        confirmedLabel = engine.processDetection(prediction);
       }
-
-      if (confirmedLabel && !state.paused) {
-        await typeChar(confirmedLabel);
-      }
-    } catch (error) {
-      log("Erro no processamento do frame: " + error.message);
+    } catch (err) {
+      console.warn("Erro no processamento do frame:", err);
     } finally {
       state.busy = false;
     }
@@ -251,81 +234,55 @@ async function processFrame() {
 }
 
 async function startCamera() {
-  if (permissionNotice) {
-    permissionNotice.classList.add("hidden");
-  }
+  if (permissionNotice) permissionNotice.classList.add("hidden");
 
-  if (statusBadge) {
-    statusBadge.textContent = "Iniciando...";
-    statusBadge.className = "badge status-standby";
-  }
+  statusBadge.textContent = "Iniciando...";
+  statusBadge.className = "badge status-standby";
 
   try {
-    // Solicita o stream de vídeo da câmera
     state.stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        width: 640,
-        height: 480,
-        facingMode: "user"
-      },
+      video: { width: 640, height: 480, facingMode: "user" },
       audio: false
     });
 
     video.srcObject = state.stream;
     await video.play();
 
-    if (cameraPlaceholder) {
-      cameraPlaceholder.classList.add("hidden");
-    }
+    if (cameraPlaceholder) cameraPlaceholder.classList.add("hidden");
+    btnStart.disabled = true;
+    btnStop.disabled = false;
 
-    if (btnStart) btnStart.disabled = true;
-    if (btnStop) btnStop.disabled = false;
-
-    // Carrega modelos se ainda não estiverem na memória
-    if (!state.session) {
-      if (statusBadge) statusBadge.textContent = "Carregando IA...";
-      await loadModel();
-    }
-
-    if (!state.landmarker) {
-      if (statusBadge) statusBadge.textContent = "Carregando Mãos...";
-      await loadMediaPipe();
-    }
+    statusBadge.textContent = "Carregando IA...";
+    await loadLabels();
+    if (!state.session) await loadModel();
+    if (!state.landmarker) await loadMediaPipe();
 
     engine.reset();
-    state.typedText = "";
-    state.paused = false;
-    updateTypedPreview();
-
     state.running = true;
-
-    if (togglePause) togglePause.disabled = false;
-    if (sendSpace) sendSpace.disabled = false;
-    if (sendBackspace) sendBackspace.disabled = false;
-    if (clearTyped) clearTyped.disabled = false;
-
-    if (statusBadge) {
-      statusBadge.textContent = "Ao vivo";
-      statusBadge.className = "badge status-active";
-    }
-
+    state.lastFrameTime = performance.now();
+    state.frameCount = 0;
     requestAnimationFrame(processFrame);
+
+    statusBadge.textContent = "Ao vivo";
+    statusBadge.className = "badge status-active";
   } catch (error) {
-    log("Erro na câmera: " + error.message);
-    
-    if (statusBadge) {
-      statusBadge.textContent = "Inativo";
-      statusBadge.className = "badge status-standby";
+    statusBadge.textContent = "Inativo";
+    statusBadge.className = "badge status-standby";
+    btnStart.disabled = false;
+    btnStop.disabled = true;
+    state.running = false;
+
+    if (state.stream) {
+      state.stream.getTracks().forEach(t => t.stop());
+      state.stream = null;
     }
 
     if (
       error.name === "NotAllowedError" ||
       error.name === "SecurityError" ||
-      error.message.includes("dismissed")
+      error.message?.includes("dismissed")
     ) {
-      if (permissionNotice) {
-        permissionNotice.classList.remove("hidden");
-      }
+      if (permissionNotice) permissionNotice.classList.remove("hidden");
     }
   }
 }
@@ -339,49 +296,30 @@ function stopCamera() {
   }
 
   video.srcObject = null;
-  if (cameraPlaceholder) {
-    cameraPlaceholder.classList.remove("hidden");
-  }
+  if (cameraPlaceholder) cameraPlaceholder.classList.remove("hidden");
 
-  if (btnStart) btnStart.disabled = false;
-  if (btnStop) btnStop.disabled = true;
+  btnStart.disabled = false;
+  btnStop.disabled = true;
 
-  if (togglePause) togglePause.disabled = true;
-  if (sendSpace) sendSpace.disabled = true;
-  if (sendBackspace) sendBackspace.disabled = true;
-  if (clearTyped) clearTyped.disabled = true;
-
-  if (predictedLetter) predictedLetter.textContent = "—";
-  if (confidenceValue) confidenceValue.textContent = "0%";
-  if (confidenceBar) confidenceBar.style.width = "0%";
+  predictedLetter.textContent = "—";
+  stabilityFill.style.width = "0%";
+  confidenceValue.textContent = "0%";
   if (fpsCounter) fpsCounter.textContent = "0 FPS";
 
-  if (statusBadge) {
-    statusBadge.textContent = "Inativo";
-    statusBadge.className = "badge status-standby";
-  }
+  statusBadge.textContent = "Inativo";
+  statusBadge.className = "badge status-standby";
 }
 
-function onTogglePause() {
-  state.paused = !state.paused;
-  if (togglePause) {
-    togglePause.textContent = state.paused ? "Retomar soletração" : "Pausar soletração";
-  }
-}
+btnStart.addEventListener("click", startCamera);
+btnStop.addEventListener("click", stopCamera);
 
-// Registro de eventos
-if (btnStart) btnStart.addEventListener("click", startCamera);
-if (btnStop) btnStop.addEventListener("click", stopCamera);
+btnSpace.addEventListener("click", () => appendText(" "));
+btnBackspace.addEventListener("click", handleBackspace);
+btnClear.addEventListener("click", handleClear);
+btnSearch.addEventListener("click", handleSearch);
 
 if (btnOpenPermission) {
   btnOpenPermission.addEventListener("click", () => {
     chrome.tabs.create({ url: chrome.runtime.getURL("sidepanel.html") });
   });
 }
-
-if (togglePause) togglePause.addEventListener("click", onTogglePause);
-if (sendSpace) sendSpace.addEventListener("click", () => typeChar(" "));
-if (sendBackspace) sendBackspace.addEventListener("click", () => typeBackspace());
-if (clearTyped) clearTyped.addEventListener("click", () => clearAllTyped());
-
-log("RVL Libras pronto.");
